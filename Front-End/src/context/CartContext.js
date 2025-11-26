@@ -1,42 +1,71 @@
 import React, { createContext, useState, useEffect } from 'react';
-import { calculateSellingPrice } from '../utils/PricingUtils'; 
+import { cartAPI } from '../services/api';
+import { calculateSellingPrice } from '../utils/PricingUtils';
 
 export const CartContext = createContext();
 
 export const CartProvider = ({ children }) => {
-  // Start with empty cart (no localStorage on init)
   const [cartItems, setCartItems] = useState([]);
   const [selectedItems, setSelectedItems] = useState([]);
-  const [currentUserId, setCurrentUserId] = useState(null); // Track current user
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
 
-  // Load cart from localStorage only when user logs in
-  useEffect(() => {
-    if (currentUserId) {
-      try {
-        const localData = localStorage.getItem(`cartItems_${currentUserId}`);
-        if (localData) {
-          setCartItems(JSON.parse(localData));
-        }
-      } catch (error) {
-        console.error("Could not parse cart items from local storage", error);
-      }
-    } else {
-      // No user logged in, clear cart
+  // Check if user is logged in
+  const isLoggedIn = () => {
+    return !!localStorage.getItem('authToken');
+  };
+
+  // Load cart from backend when component mounts or user logs in
+  const loadCart = async () => {
+    if (!isLoggedIn()) {
       setCartItems([]);
       setSelectedItems([]);
+      return;
     }
-  }, [currentUserId]);
 
-  // Save cart to localStorage only if user is logged in
+    setLoading(true);
+    setError(null);
+
+    try {
+      const data = await cartAPI.get();
+      
+      // Transform backend cart data to match frontend structure
+      const transformedItems = (data.cart_items || []).map(item => ({
+        id: item.product.id,
+        name: item.product.product_name,
+        price: parseFloat(item.product.price),
+        discount: parseInt(item.product.discount) || 0,
+        imageUrl: item.product.image_url,
+        stock: parseInt(item.product.stock),
+        quantity: parseInt(item.quantity),
+        cartItemId: item.id, // Backend cart_item ID for updates/deletes
+      }));
+
+      setCartItems(transformedItems);
+    } catch (err) {
+      console.error('Failed to load cart:', err);
+      setError(err.message);
+      setCartItems([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Load cart on mount and when auth changes
   useEffect(() => {
-    if (currentUserId && cartItems.length >= 0) {
-      localStorage.setItem(`cartItems_${currentUserId}`, JSON.stringify(cartItems));
-    }
-    setSelectedItems(prevSelected =>
-      prevSelected.filter(id => cartItems.some(item => item.id === id))
-    );
-  }, [cartItems, currentUserId]);
+    loadCart();
+  }, []);
 
+  // Calculate selected subtotal
+  const selectedSubtotal = cartItems
+    .filter(item => selectedItems.includes(item.id))
+    .reduce((total, item) => {
+      const validQuantity = parseInt(item.quantity) || 0;
+      const sellingPrice = calculateSellingPrice(item.price, item.discount);
+      return total + (validQuantity * sellingPrice);
+    }, 0);
+
+  // Toggle item selection
   const toggleSelectItem = (itemId) => {
     setSelectedItems(prevSelected =>
       prevSelected.includes(itemId)
@@ -45,6 +74,7 @@ export const CartProvider = ({ children }) => {
     );
   };
 
+  // Toggle select all
   const toggleSelectAll = () => {
     if (selectedItems.length === cartItems.length) {
       setSelectedItems([]);
@@ -53,74 +83,168 @@ export const CartProvider = ({ children }) => {
     }
   };
 
-  const selectedSubtotal = cartItems
-    .filter(item => selectedItems.includes(item.id))
-    .reduce((total, item) => {
-      const validQuantity = parseInt(item.quantity) || 0;
-      const sellingPrice = calculateSellingPrice(item.price, item.discount); 
-      return total + (validQuantity * sellingPrice);
-    }, 0);
+  // Add to cart
+  const addToCart = async (product, quantity = 1) => {
+    if (!isLoggedIn()) {
+      throw new Error('Please login to add items to cart');
+    }
 
-  const addToCart = (productToAdd, quantity = 1) => {
-    if (!productToAdd || quantity < 1) return;
-    setCartItems((prevItems) => {
-      const existingItem = prevItems.find(item => item.id === productToAdd.id);
-      if (existingItem) {
-        return prevItems.map(item =>
-          item.id === productToAdd.id
-            ? { ...item, quantity: item.quantity + quantity }
-            : item
-        );
-      } else {
-        return [...prevItems, { ...productToAdd, quantity: quantity }];
-      }
-    });
-  };
+    if (!product || quantity < 1) {
+      throw new Error('Invalid product or quantity');
+    }
 
-  const removeFromCart = (productId) => {
-    setCartItems(prevItems => prevItems.filter(item => item.id !== productId));
-    setSelectedItems(prevSelected => prevSelected.filter(id => id !== productId));
-  };
+    setLoading(true);
+    setError(null);
 
-  const increaseQuantity = (productId) => {
-    setCartItems(prevItems =>
-      prevItems.map(item =>
-        item.id === productId ? { ...item, quantity: item.quantity + 1 } : item
-      )
-    );
-  };
-
-  const decreaseQuantity = (productId) => {
-    setCartItems(prevItems =>
-      prevItems
-        .map(item => {
-          if (item.id === productId) {
-            return { ...item, quantity: item.quantity - 1 };
-          }
-          return item;
-        })
-        .filter(item => item.quantity > 0)
-    );
-  };
-
-  const clearCart = () => {
-    setCartItems([]);
-    setSelectedItems([]);
-    // Also clear from localStorage
-    if (currentUserId) {
-      localStorage.removeItem(`cartItems_${currentUserId}`);
+    try {
+      await cartAPI.addItem(product.id, quantity);
+      await loadCart(); // Reload cart to get updated data
+      return true;
+    } catch (err) {
+      console.error('Failed to add to cart:', err);
+      setError(err.message);
+      throw err;
+    } finally {
+      setLoading(false);
     }
   };
 
-  const removeSelectedItems = () => {
-    setCartItems(prevItems => prevItems.filter(item => !selectedItems.includes(item.id)));
-    setSelectedItems([]);
+  // Remove from cart
+  const removeFromCart = async (productId) => {
+    if (!isLoggedIn()) return;
+
+    const item = cartItems.find(i => i.id === productId);
+    if (!item) return;
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      await cartAPI.removeItem(item.cartItemId);
+      await loadCart();
+      
+      // Remove from selected items
+      setSelectedItems(prev => prev.filter(id => id !== productId));
+    } catch (err) {
+      console.error('Failed to remove from cart:', err);
+      setError(err.message);
+      throw err;
+    } finally {
+      setLoading(false);
+    }
   };
 
-  // Function to set current user (call this from App.js on login)
-  const setUser = (userId) => {
-    setCurrentUserId(userId);
+  // Increase quantity
+  const increaseQuantity = async (productId) => {
+    if (!isLoggedIn()) return;
+
+    const item = cartItems.find(i => i.id === productId);
+    if (!item) return;
+
+    const newQuantity = item.quantity + 1;
+
+    // Check stock
+    if (newQuantity > item.stock) {
+      throw new Error(`Cannot add more than ${item.stock} units of ${item.name}`);
+    }
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      await cartAPI.updateItem(item.cartItemId, newQuantity);
+      await loadCart();
+    } catch (err) {
+      console.error('Failed to increase quantity:', err);
+      setError(err.message);
+      throw err;
+    } finally {
+      setLoading(false);
+    }
   };
+
+  // Decrease quantity
+  const decreaseQuantity = async (productId) => {
+    if (!isLoggedIn()) return;
+
+    const item = cartItems.find(i => i.id === productId);
+    if (!item) return;
+
+    if (item.quantity <= 1) {
+      // Remove item if quantity would go to 0
+      await removeFromCart(productId);
+      return;
+    }
+
+    const newQuantity = item.quantity - 1;
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      await cartAPI.updateItem(item.cartItemId, newQuantity);
+      await loadCart();
+    } catch (err) {
+      console.error('Failed to decrease quantity:', err);
+      setError(err.message);
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Clear entire cart
+  const clearCart = async () => {
+    if (!isLoggedIn()) {
+      setCartItems([]);
+      setSelectedItems([]);
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      await cartAPI.clear();
+      setCartItems([]);
+      setSelectedItems([]);
+    } catch (err) {
+      console.error('Failed to clear cart:', err);
+      setError(err.message);
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Remove selected items
+  const removeSelectedItems = async () => {
+    if (!isLoggedIn() || selectedItems.length === 0) return;
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      // Remove each selected item
+      const itemsToRemove = cartItems.filter(item => selectedItems.includes(item.id));
+      
+      for (const item of itemsToRemove) {
+        await cartAPI.removeItem(item.cartItemId);
+      }
+
+      await loadCart();
+      setSelectedItems([]);
+    } catch (err) {
+      console.error('Failed to remove selected items:', err);
+      setError(err.message);
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Refresh cart (for external use)
+  const refreshCart = loadCart;
 
   return (
     <CartContext.Provider
@@ -128,6 +252,8 @@ export const CartProvider = ({ children }) => {
         cartItems,
         selectedItems,
         selectedSubtotal,
+        loading,
+        error,
         toggleSelectItem,
         toggleSelectAll,
         addToCart,
@@ -136,7 +262,7 @@ export const CartProvider = ({ children }) => {
         decreaseQuantity,
         clearCart,
         removeSelectedItems,
-        setUser 
+        refreshCart,
       }}
     >
       {children}
