@@ -13,6 +13,11 @@ use App\Http\Controllers\CartItemController;
 use App\Http\Controllers\OrderController;
 use App\Http\Controllers\OrderItemController;
 
+// Test route
+Route::get('/test', function () {
+    return response()->json(['message' => 'API is working!']);
+});
+
 /*
 |--------------------------------------------------------------------------
 | 1. PUBLIC ROUTES (No Login Required)
@@ -73,7 +78,6 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/order-items/{id}', [OrderItemController::class, 'show']);
 
     // --- ADMIN (Products, Categories, Order Status) ---
-    // Note: In a real app, use middleware like 'can:admin' for these
     Route::post('/products', [ProductController::class, 'store']);
     Route::put('/products/{product}', [ProductController::class, 'update']);
     Route::delete('/products/{product}', [ProductController::class, 'destroy']);

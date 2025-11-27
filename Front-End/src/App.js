@@ -67,20 +67,30 @@ function AppContent() {
     setLoading(false);
   }, []);
 
-  // Fetch categories on mount
-  useEffect(() => {
-    const fetchCategories = async () => {
-      try {
-        const data = await categoryAPI.getAll();
-        setCategories(data);
-      } catch (error) {
-        console.error('Failed to fetch categories:', error);
-        showAlert('Failed to load categories', 'danger');
-      }
-    };
+// Add this code to replace the useEffect for categories in App.js
 
-    fetchCategories();
-  }, []);
+useEffect(() => {
+  const fetchCategories = async () => {
+    try {
+      const data = await categoryAPI.getAll();
+      
+      // Transform backend data to frontend format
+      const transformedCategories = data.map(cat => ({
+        id: cat.id,
+        name: cat.category_name,
+        slug: cat.slug,
+        imageUrl: cat.image_url || '/img/placeholder.png'
+      }));
+      
+      setCategories(transformedCategories);
+    } catch (error) {
+      console.error('Failed to fetch categories:', error);
+      showAlert('Failed to load categories', 'danger');
+    }
+  };
+
+  fetchCategories();
+}, []);
 
   // Fetch products when filters change
   useEffect(() => {
